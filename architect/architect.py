@@ -285,6 +285,11 @@ def _call_ollama(
     return _call_generate(**kwargs)
 
 
+# Public aliases
+call_ollama = _call_ollama
+extract_json = _extract_json
+
+
 # ---------------------------------------------------------------------------
 # MasterArchitect
 # ---------------------------------------------------------------------------

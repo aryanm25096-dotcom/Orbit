@@ -13,4 +13,5 @@ env/
 *.log
 .DS_Store
 orbit_runs/
+.orbit_workspaces*/
 *.json.tmp
