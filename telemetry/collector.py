@@ -57,7 +57,13 @@ class TelemetryCollector:
         )
 
     def record_llm_call(
-        self, phase: str, tokens_in: int, tokens_out: int, model: str
+        self,
+        phase: str,
+        tokens_in: int,
+        tokens_out: int,
+        model: str,
+        provider: str = "ollama",
+        endpoint: str = "http://localhost:11434",
     ) -> None:
         """Record LLM prompt evaluation and output tokens."""
         self.total_tokens_in += tokens_in
@@ -69,6 +75,8 @@ class TelemetryCollector:
             tokens_out=tokens_out,
             total_tokens=tokens_in + tokens_out,
             model=model,
+            provider=provider,
+            endpoint=endpoint,
         )
 
     def record_tool_call(self, phase: str, tool: str, success: bool, **kwargs: Any) -> None:
@@ -98,12 +106,19 @@ class TelemetryCollector:
 
     def report(self) -> dict[str, Any]:
         """Generate structured JSON report for this run."""
+        tool_counts: dict[str, int] = {}
+        for ev in self._events:
+            if ev.event == "tool_call":
+                tname = ev.metadata.get("tool", "unknown")
+                tool_counts[tname] = tool_counts.get(tname, 0) + 1
+
         return {
             "wall_clock_sec": self.wall_clock_sec(),
             "total_tokens_in": self.total_tokens_in,
             "total_tokens_out": self.total_tokens_out,
             "total_tokens": self.total_tokens_in + self.total_tokens_out,
             "total_tool_calls": self.total_tool_calls,
+            "tool_calls_breakdown": tool_counts,
             "total_recovery_loops": self.total_recovery_loops,
             "phase_durations": self.phase_durations,
             "events": [asdict(e) for e in self._events],

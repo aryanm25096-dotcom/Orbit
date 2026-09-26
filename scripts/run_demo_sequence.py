@@ -14,6 +14,9 @@ Demonstrates the full Orbit multi-agent lifecycle:
 
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings("ignore")
+
 import argparse
 import json
 import shutil
@@ -43,20 +46,32 @@ def main() -> int:
     )
     parser.add_argument(
         "--task",
-        default=(
-            "Add a multiply function that takes two numbers and returns their product to src/greeter.py, "
-            "and add a test_multiply unit test to tests/test_greeter.py."
-        ),
+        default=None,
         help="Task requirement string.",
     )
+    from config.router import load_routing_config
+    cfg = load_routing_config()
+    default_model = cfg.get("stage_a", {}).get("default_model", "deepseek-coder-v2:latest")
+
     parser.add_argument(
         "--model",
-        default="nemotron-3-ultra:cloud",
-        help="Model to use.",
+        default=default_model,
+        help="Model to use (defaults to routing config stage_a.default_model).",
     )
     args = parser.parse_args()
 
     target_dir = (ROOT / args.target).resolve()
+    if args.task is None:
+        if "git_repo" in str(target_dir):
+            args.task = (
+                "Add a multiply function that takes two numbers and returns their product to src/math_utils.py, "
+                "and add a test_multiply unit test to tests/test_math_utils.py."
+            )
+        else:
+            args.task = (
+                "Add a multiply function that takes two numbers and returns their product to src/greeter.py, "
+                "and add a test_multiply unit test to tests/test_greeter.py."
+            )
     backup_dir = ROOT / "orbit_runs" / "demo_target_backup"
 
     # Backup clean target
@@ -118,13 +133,22 @@ def main() -> int:
         integrator = Integrator(target_dir=target_dir, max_recovery_loops=3)
 
         # Inject a simulated bug in one file to demonstrate targeted recovery
-        print("  Injecting deliberate syntax/logic bug to exercise targeted recovery...")
         responsible_task = executed_tasks[0]
         ws_path = Path(responsible_task.allowed_workspace)
-        calc_files = list(ws_path.rglob("greeter.py"))
-        if calc_files:
-            original_content = calc_files[0].read_text()
-            calc_files[0].write_text(original_content + "\n# BUGGY CODE\ndef multiply(a, b): return a + b  # Deliberate bug\n")
+        calc_files = [f for f in ws_path.rglob("*.py") if "test" not in f.name and "src" in str(f)]
+        if not calc_files:
+            calc_files = [f for f in ws_path.rglob("*.py") if "test" not in f.name]
+
+        inject_file = calc_files[0] if calc_files else None
+        original_content = ""
+        rel_str = ""
+        if inject_file:
+            original_content = inject_file.read_text()
+            inject_file.write_text(original_content + "\n# BUGGY CODE\ndef multiply(a, b): return a +  # Deliberate syntax bug\n")
+            rel_str = str(inject_file.relative_to(ws_path))
+            if rel_str not in responsible_task.evidence.setdefault("files_written", []):
+                responsible_task.evidence["files_written"].append(rel_str)
+            print("  Injecting deliberate syntax/logic bug to exercise targeted recovery...")
 
         rework_attempt = 0
 
@@ -134,8 +158,9 @@ def main() -> int:
             print(f"  --> Targeted rework pass #{rework_attempt} triggered for worker {contract.task_id}")
             print(f"      Failing command: {ctx.command}")
             # Restore corrected implementation
-            if calc_files:
-                calc_files[0].write_text(original_content)
+            if inject_file:
+                inject_file.write_text(original_content)
+                contract.evidence["files_written"] = [rel_str]
             contract.status = TaskStatus.DONE
             contract.result_summary = "Surgically corrected multiply implementation"
             return contract
@@ -167,6 +192,67 @@ def main() -> int:
             evidence=review_evidence,
         )
         print(reviewer.format_table(verdict))
+
+        # If reviewer flagged rework tasks, dispatch targeted rework on the responsible worker
+        if not verdict.passed and verdict.rework_tasks:
+            reviewer_reworks_run = len(verdict.rework_tasks)
+            print(f"\n[orbit] Reviewer flagged gaps ({reviewer_reworks_run} rework task(s)). Executing targeted rework...")
+            for rework_task in verdict.rework_tasks:
+                print(f"  • Launching review rework [{rework_task.role}] {rework_task.task_id}: {rework_task.objective[:60]}...")
+                rework_result = run_worker(
+                    contract=rework_task,
+                    target_dir=target_dir,
+                    model=args.model,
+                )
+                rework_task.status = rework_result.status
+                rework_task.evidence = rework_result.evidence
+                rework_task.result_summary = rework_result.result_summary
+                integrator.merge([rework_task])
+                executed_tasks.append(rework_task)
+
+            # Re-verify test suite with Integrator
+            verif = integrator.verify()
+
+            # Re-evaluate Reviewer
+            review_evidence["diff"] = integrator.compute_diff()
+            review_evidence["test_output"] = verif.output
+            verdict = reviewer.review(
+                requirement=args.task,
+                spec=spec,
+                evidence=review_evidence,
+            )
+            print(f"\n[orbit] Post-Rework Review Verdict:\n{reviewer.format_table(verdict)}\n")
+
+        # Record worker and reviewer telemetry
+        for t in executed_tasks:
+            t_in = t.evidence.get("tokens_in", 0)
+            t_out = t.evidence.get("tokens_out", 0)
+            if t_in or t_out:
+                telemetry.record_llm_call(
+                    phase=f"worker_{t.role}",
+                    tokens_in=t_in,
+                    tokens_out=t_out,
+                    model=args.model,
+                    provider="ollama",
+                    endpoint="http://localhost:11434",
+                )
+        if getattr(reviewer, "last_tokens_in", 0) or getattr(reviewer, "last_tokens_out", 0):
+            telemetry.record_llm_call(
+                phase="reviewer",
+                tokens_in=reviewer.last_tokens_in,
+                tokens_out=reviewer.last_tokens_out,
+                model=args.model,
+                provider="ollama",
+                endpoint="http://localhost:11434",
+            )
+
+        telemetry_path = ROOT / "orbit_runs" / "demo_telemetry.json"
+        telemetry.save(telemetry_path)
+        print(f"\n[telemetry] Report saved to {telemetry_path}")
+        llm_events = [e for e in telemetry._events if e.event == "llm_call"]
+        print(f"[telemetry] Total LLM calls: {len(llm_events)}")
+        for e in llm_events:
+            print(f"  • Phase: {e.phase:<15} | Model: {e.metadata.get('model'):<25} | Provider: {e.metadata.get('provider'):<10} | Endpoint: {e.metadata.get('endpoint')}")
 
         print("\n" + "=" * 75)
         print(f"  DEMO SEQUENCE COMPLETE — VERDICT: {'✅ PASS' if verdict.passed else '❌ FAIL'}")

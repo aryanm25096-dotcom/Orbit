@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from architect.architect import call_ollama, extract_json
+from architect.architect import LAST_RAW_OLLAMA_RESPONSE, call_ollama, extract_json
 from config.router import get_role_config
 from gateway.gateway import detect_test_command
 from indexer.indexer import RepoIndex
@@ -117,9 +117,11 @@ def run_naive_baseline(
         "tokens_out": tok_out,
         "total_tokens": tok_in + tok_out,
         "tool_calls": 0,
+        "tool_calls_breakdown": {},
         "guardrails_enforced": False,
         "parallel_workers": 1,
         "recovery_loop": False,
+        "recovery_loops_run": 0,
         "reviewer_verdict": "N/A",
         "test_suite_passed": test_passed,
     }
@@ -135,10 +137,11 @@ def main() -> int:
     parser.add_argument(
         "--task",
         default=(
-            "Implement transfer(from_id: str, to_id: str, amount: float, fx_rate: float = 1.0) in PaymentService (src/coord_service/service.py) "
-            "that validates accounts and amount, deducts amount + fee where fee is round(amount * self.fee_percent, 2), "
-            "raises InsufficientFundsError if balance < amount + fee, raises InvalidAmountError if amount <= 0, "
-            "credits round(amount * fx_rate, 2) to to_id, records a TransactionRecord in ledger, and returns the TransactionRecord."
+            "Database role: Update Ledger in src/coord_service/ledger.py to support transaction audit records and account history querying. "
+            "Backend role: Implement transfer(from_id: str, to_id: str, amount: float, fx_rate: float = 1.0) in PaymentService (src/coord_service/service.py) "
+            "with full PEP 8 docstring, validating accounts and positive amount, deducting amount + fee where fee is round(amount * self.fee_percent, 2), "
+            "raising InsufficientFundsError if balance < amount + fee, raising InvalidAmountError if amount <= 0, "
+            "crediting round(amount * fx_rate, 2) to to_id, recording a TransactionRecord in ledger, and returning the TransactionRecord."
         ),
         help="Task requirement for both baseline and Orbit.",
     )
@@ -146,6 +149,11 @@ def main() -> int:
         "--model",
         default="nemotron-3-ultra:cloud",
         help="Model tag to benchmark on both systems.",
+    )
+    parser.add_argument(
+        "--out",
+        default="orbit_runs/hero_artifact.json",
+        help="Output JSON artifact path.",
     )
     args = parser.parse_args()
 
@@ -195,11 +203,20 @@ def main() -> int:
             "tokens_out": telemetry.get("total_tokens_out", 0),
             "total_tokens": telemetry.get("total_tokens", 0),
             "tool_calls": telemetry.get("total_tool_calls", 0),
+            "tool_calls_breakdown": telemetry.get("tool_calls_breakdown", {}),
             "guardrails_enforced": True,
-            "parallel_workers": len(orbit_res.get("tasks", [])),
-            "recovery_loop": True,
+            "parallel_workers": len(orbit_res.get("spec", {}).get("tasks", [])),
+            "recovery_loops_run": orbit_res.get("total_recovery_loops", 0),
             "reviewer_verdict": "PASS" if orbit_res.get("verdict", {}).get("passed", False) else "FAIL",
             "test_suite_passed": orbit_res.get("test_suite_passed", False),
+            "tasks": [
+                {
+                    "task_id": t.get("task_id"),
+                    "role": t.get("role"),
+                    "objective": t.get("objective"),
+                }
+                for t in orbit_res.get("spec", {}).get("tasks", [])
+            ],
         }
 
         # 3. Calculate Deltas & Hero Artifact
@@ -217,9 +234,15 @@ def main() -> int:
         }
 
         # Save artifact
-        out_path = ROOT / "orbit_runs" / "hero_artifact.json"
+        out_path = ROOT / args.out
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(hero_data, indent=2), encoding="utf-8")
+
+        import architect.architect as arch_mod
+        if getattr(arch_mod, "LAST_RAW_OLLAMA_RESPONSE", None):
+            raw_path = ROOT / "orbit_runs" / "reviewer_raw_response.json"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(json.dumps(arch_mod.LAST_RAW_OLLAMA_RESPONSE, indent=2), encoding="utf-8")
 
         # 4. Print Comparison Table
         print("\n" + "=" * 70)

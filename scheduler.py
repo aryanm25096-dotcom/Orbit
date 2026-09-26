@@ -318,12 +318,56 @@ def run_orbit(
     table_str = reviewer.format_table(verdict)
     print(f"\n{table_str}\n")
 
+    # If reviewer flagged rework tasks, dispatch targeted rework on the responsible worker
+    reviewer_reworks_run = 0
+    if not verdict.passed and verdict.rework_tasks:
+        reviewer_reworks_run = len(verdict.rework_tasks)
+        print(f"[orbit] Reviewer flagged gaps ({reviewer_reworks_run} rework task(s)). Executing targeted rework...")
+        for rework_task in verdict.rework_tasks:
+            print(f"  • Launching review rework [{rework_task.role}] {rework_task.task_id}: {rework_task.objective[:60]}...")
+            rework_result = run_worker(
+                contract=rework_task,
+                target_dir=target,
+                model=resolved_model,
+                base_url=resolved_base_url,
+                ollama_caller=ollama_caller,
+            )
+            rework_task.status = rework_result.status
+            rework_task.evidence = rework_result.evidence
+            rework_task.result_summary = rework_result.result_summary
+            integrator.merge([rework_task])
+            updated_tasks.append(rework_task)
+
+        # Re-verify test suite with Integrator
+        verif = integrator.verify()
+        test_suite_passed = verif.passed
+
+        # Re-evaluate Reviewer
+        review_evidence["diff"] = integrator.compute_diff()
+        review_evidence["test_output"] = verif.output
+        verdict = reviewer.review(
+            requirement=task,
+            spec=spec,
+            evidence=review_evidence,
+        )
+        table_str = reviewer.format_table(verdict)
+        print(f"\n[orbit] Post-Rework Review Verdict:\n{table_str}\n")
+
     # Record worker tool calls and tokens into telemetry
     for t in updated_tasks:
         gw_summary = t.evidence.get("gateway_summary", {})
-        calls = gw_summary.get("total_calls", 0)
-        for _ in range(calls):
-            telemetry.record_tool_call(phase="worker", tool="tool_gateway", success=True)
+        events = gw_summary.get("log", [])
+        if events:
+            for ev in events:
+                telemetry.record_tool_call(
+                    phase="worker",
+                    tool=ev.get("tool", "tool_gateway"),
+                    success=ev.get("ok", True),
+                )
+        else:
+            calls = gw_summary.get("total_calls", gw_summary.get("call_count", 0))
+            for _ in range(calls):
+                telemetry.record_tool_call(phase="worker", tool="tool_gateway", success=True)
         t_in = t.evidence.get("tokens_in", 0)
         t_out = t.evidence.get("tokens_out", 0)
         if t_in or t_out:
@@ -343,6 +387,8 @@ def run_orbit(
         "test_suite_passed": test_suite_passed,
         "test_result_output": integration_report.get("verification", {}).get("output", ""),
         "recovery_loops_run": integration_report.get("recovery_loops_run", 0),
+        "reviewer_reworks_run": reviewer_reworks_run,
+        "total_recovery_loops": integration_report.get("recovery_loops_run", 0) + reviewer_reworks_run,
         "tie_breaker_applied": integration_report.get("tie_breaker_applied", False),
         "diff": integration_report.get("diff", ""),
         "verdict": verdict.model_dump(),

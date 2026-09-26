@@ -289,10 +289,22 @@ class BaseWorker(ABC):
         written_paths: list[str] = []
         try:
             for item in files_to_write:
-                rel_path = item.get("path", "")
+                rel_path = item.get("path", "").strip()
                 content = item.get("content", "")
                 if not rel_path:
                     continue
+                p = Path(rel_path)
+                # Only remap safe relative paths without directory traversal
+                if not p.is_absolute() and ".." not in p.parts:
+                    if self.target_dir and not (self.target_dir / p).exists():
+                        fname = p.name
+                        matches = [
+                            f for f in self.target_dir.rglob(fname)
+                            if not any(part.startswith(".") for part in f.parts)
+                        ]
+                        if len(matches) == 1:
+                            rel_path = str(matches[0].relative_to(self.target_dir))
+
                 gateway.write_file(rel_path, content)
                 written_paths.append(rel_path)
         except PathEscapeError as exc:

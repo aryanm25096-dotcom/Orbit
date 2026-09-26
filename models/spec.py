@@ -245,6 +245,19 @@ class MasterSpecification(BaseModel):
                 return t
         return None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _clean_dependency_graph(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            graph = data.get("dependency_graph", [])
+            if isinstance(graph, list):
+                # Filter out placeholder edges where an endpoint is empty string
+                data["dependency_graph"] = [
+                    edge for edge in graph
+                    if not (isinstance(edge, dict) and (not edge.get("from_task") or not edge.get("to_task")))
+                ]
+        return data
+
     @model_validator(mode="after")
     def _no_dangling_edges(self) -> "MasterSpecification":
         """Every edge endpoint must reference a real task_id."""

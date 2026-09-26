@@ -25,9 +25,12 @@ Telemetry
 from __future__ import annotations
 
 import json
+import logging
 import re
 import textwrap
 import time
+
+logger = logging.getLogger("orbit.architect")
 from pathlib import Path
 from typing import Any
 
@@ -95,8 +98,9 @@ _SYSTEM_PROMPT = textwrap.dedent("""\
     5. allowed_workspace for each task must be: {workspace_root}/<task_id>
        (use the exact workspace_root value supplied in the user message).
     6. acceptance_criteria must be a list of strings (may be empty list []).
-    7. Do NOT include fields: status, result_summary, evidence — those are runtime fields.
-    8. Use 1-3 tasks only. Do not invent tasks beyond what the requirement needs.
+    8. Use 1-3 tasks only. Only create tasks for roles (database, backend, frontend) that are
+       directly and explicitly required by the requirement and codebase. For example, for pure
+       computational, backend, or utility functions without database models, do NOT create a database task.
 
     Schema:
 """)
@@ -173,6 +177,59 @@ CHAT_MODELS: frozenset[str] = frozenset({
     "nemotron-3-ultra:cloud",
 })
 
+# Global cache of last raw Ollama response for telemetry/inspection
+LAST_RAW_OLLAMA_RESPONSE: dict[str, Any] = {}
+
+
+def _extract_thinking_json(thinking: str) -> str:
+    """
+    Safely extract JSON from thinking text when content is missing.
+    Rules (PRD hardening):
+      - Validates that extracted snippet parses as valid JSON.
+      - If multiple conflicting JSON blocks exist, raises ValueError.
+      - Never guesses at ambiguous output.
+    """
+    if not thinking.strip():
+        raise ValueError("Thinking text is empty; cannot extract JSON.")
+
+    candidates: list[tuple[str, Any]] = []
+
+    # 1. Search for fenced code blocks
+    matches = _JSON_BLOCK_RE.findall(thinking)
+    for m in matches:
+        m_str = m.strip()
+        try:
+            parsed = json.loads(m_str)
+            candidates.append((m_str, parsed))
+        except json.JSONDecodeError:
+            continue
+
+    # 2. If no valid fenced block found, search for outer braces '{' ... '}'
+    if not candidates:
+        start = thinking.find("{")
+        end = thinking.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            snippet = thinking[start:end+1]
+            try:
+                parsed = json.loads(snippet)
+                candidates.append((snippet, parsed))
+            except json.JSONDecodeError:
+                pass
+
+    if not candidates:
+        raise ValueError("No valid parseable JSON object found in model's thinking block.")
+
+    # 3. Check for ambiguity (multiple distinct candidate JSONs)
+    first_parsed = candidates[0][1]
+    for _, parsed_obj in candidates[1:]:
+        if parsed_obj != first_parsed:
+            raise ValueError(
+                f"Ambiguous JSON in thinking block: found {len(candidates)} distinct JSON objects."
+            )
+
+    return candidates[0][0]
+
+
 def _call_generate(
     prompt: str,
     system: str,
@@ -193,7 +250,7 @@ def _call_generate(
         "prompt": prompt,
         "stream": True,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": num_predict},
+        "options": {"temperature": temperature, "num_predict": num_predict, "num_ctx": 8192},
     }
     resp = requests.post(
         f"{base_url.rstrip('/')}/api/generate",
@@ -235,6 +292,8 @@ def _call_chat(
     require the messages-list format and respond fast enough that a
     single blocking read is fine.
     """
+    global LAST_RAW_OLLAMA_RESPONSE
+
     payload = {
         "model": model,
         "messages": [
@@ -243,7 +302,7 @@ def _call_chat(
         ],
         "stream": False,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": num_predict},
+        "options": {"temperature": temperature, "num_predict": num_predict, "num_ctx": 8192},
     }
     resp = requests.post(
         f"{base_url.rstrip('/')}/api/chat",
@@ -252,7 +311,35 @@ def _call_chat(
     )
     resp.raise_for_status()
     data = resp.json()
+    LAST_RAW_OLLAMA_RESPONSE = data
+
+    # Check for truncation (hits num_predict limit before natural stop)
+    if data.get("done_reason") == "length":
+        logger.warning(
+            f"[ollama] Model {model} response truncated (hit num_predict limit). "
+            f"Retrying once requesting concise JSON directly..."
+        )
+        concise_prompt = (
+            prompt + "\n\nCRITICAL: Be extremely concise. Avoid verbose internal reasoning. "
+            "Output ONLY the required JSON directly."
+        )
+        payload["messages"][-1]["content"] = concise_prompt
+        resp2 = requests.post(
+            f"{base_url.rstrip('/')}/api/chat",
+            json=payload,
+            timeout=(10, ollama_timeout),
+        )
+        if resp2.status_code == 200:
+            data = resp2.json()
+            LAST_RAW_OLLAMA_RESPONSE = data
+
     content = data.get("message", {}).get("content", "")
+    thinking = data.get("message", {}).get("thinking", "")
+
+    if not content.strip() and thinking:
+        logger.info("[ollama] Content field empty; extracting verified JSON from thinking block...")
+        content = _extract_thinking_json(thinking)
+
     return (
         content,
         data.get("prompt_eval_count", 0),
@@ -266,7 +353,7 @@ def _call_ollama(
     model: str,
     base_url: str,
     temperature: float = 0.0,
-    num_predict: int = 2048,
+    num_predict: int = 4096,
     ollama_timeout: int = 600,
 ) -> tuple[str, int, int]:
     """

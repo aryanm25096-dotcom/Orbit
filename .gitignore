@@ -13,6 +13,6 @@ env/
 *.log
 .DS_Store
 orbit_runs/
-.orbit_workspaces*/
-.orbit_integrator*/
+.orbit*
+test_targets/.orbit*
 *.json.tmp

@@ -359,7 +359,7 @@ Reviewer's final pass.
   the task graph's complexity actually requires it beyond the default
   ready-queue.
 
-7. Success Metrics
+7\. Success Metrics
 
 - Correctness: **Verified (Synthetic Benchmark)**
   - Evidence: [orbit_runs/demo_telemetry.json](file:///Users/aryanmudgal/Desktop/Orbit%20harness/orbit_runs/demo_telemetry.json) — Both `test_targets/plain_dir` and `test_targets/git_repo` runs reached final PASS after targeted recovery.

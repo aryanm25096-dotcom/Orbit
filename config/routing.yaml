@@ -12,31 +12,31 @@ guardrails:
 
 # Stage A default — one model, all roles.
 stage_a:
-  default_model: nemotron-3-ultra:cloud
+  default_model: deepseek-coder-v2:latest
   provider: ollama
   base_url: http://localhost:11434
 
 # Stage B per-role overrides (PRD §4.3, Phase 7).
 stage_b:
-  enabled: true
+  enabled: false
   roles:
     architect:
-      model: nemotron-3-ultra:cloud
+      model: deepseek-coder-v2:latest
       provider: ollama
       base_url: http://localhost:11434
     database:
-      model: nemotron-3-ultra:cloud
+      model: deepseek-coder-v2:latest
       provider: ollama
       base_url: http://localhost:11434
     backend:
-      model: nemotron-3-ultra:cloud
+      model: deepseek-coder-v2:latest
       provider: ollama
       base_url: http://localhost:11434
     frontend:
-      model: mistralai/mistral-7b-instruct:free
-      provider: openrouter
-      base_url: https://openrouter.ai/api/v1
+      model: deepseek-coder-v2:latest
+      provider: ollama
+      base_url: http://localhost:11434
     reviewer:
-      model: nemotron-3-ultra:cloud
+      model: deepseek-coder-v2:latest
       provider: ollama
       base_url: http://localhost:11434

@@ -570,6 +570,7 @@ class ToolGateway:
         return {
             "workspace_root": str(self.workspace_root),
             "call_count": self._call_count,
+            "total_calls": self._call_count,
             "max_tool_calls": self.max_tool_calls,
             "budget_remaining": max(0, self.max_tool_calls - self._call_count),
             "max_retries": self.max_retries,

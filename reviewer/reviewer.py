@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import textwrap
 from typing import Any, Callable
 
@@ -135,6 +136,8 @@ class GlobalReviewer:
         self.model = model
         self.base_url = base_url
         self._call_ollama = ollama_caller or call_ollama
+        self.last_tokens_in: int = 0
+        self.last_tokens_out: int = 0
 
     def _find_responsible_task(self, criterion: str, spec: MasterSpecification) -> TaskContract:
         """Find the task whose acceptance criteria or objective mentions this criterion."""
@@ -168,17 +171,56 @@ class GlobalReviewer:
             temperature=0.0,
         )
 
+        # Immediately write raw response before any downstream processing
+        try:
+            import architect.architect as arch_mod
+            raw_payload = getattr(arch_mod, "LAST_RAW_OLLAMA_RESPONSE", None) or {
+                "message": {"role": "assistant", "content": raw_resp}
+            }
+            repo_root = Path(__file__).resolve().parent.parent
+            raw_path = repo_root / "orbit_runs" / "reviewer_raw_response.json"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(json.dumps(raw_payload, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to write reviewer_raw_response.json: {e}")
+
+        if not raw_resp.strip():
+            logger.warning("Empty response from Reviewer model, retrying once...")
+            raw_resp, tok_in_2, tok_out_2 = self._call_ollama(
+                prompt=prompt,
+                system=_REVIEWER_SYSTEM_PROMPT,
+                model=self.model,
+                base_url=self.base_url,
+                temperature=0.1,
+            )
+            tok_in += tok_in_2
+            tok_out += tok_out_2
+
         json_str = extract_json(raw_resp)
+        data = None
         try:
             data = json.loads(json_str)
-        except json.JSONDecodeError as exc:
-            logger.error(f"Failed to parse Reviewer JSON: {exc}\nRaw: {raw_resp[:300]}")
-            # Fallback safe verdict on malformed JSON
-            data = {
-                "per_requirement_results": {"Requirement implementation": False},
-                "contract_adherence": False,
-                "notes": f"Reviewer JSON parse failure: {exc}",
-            }
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse Reviewer JSON, retrying with format reminder...")
+            retry_prompt = prompt + "\n\nCRITICAL: Return ONLY valid parseable JSON matching the schema. No markdown fences, no explanation."
+            raw_resp, tok_in_2, tok_out_2 = self._call_ollama(
+                prompt=retry_prompt,
+                system=_REVIEWER_SYSTEM_PROMPT,
+                model=self.model,
+                base_url=self.base_url,
+                temperature=0.1,
+            )
+            tok_in += tok_in_2
+            tok_out += tok_out_2
+            try:
+                data = json.loads(extract_json(raw_resp))
+            except json.JSONDecodeError as exc:
+                logger.error(f"Failed to parse Reviewer JSON on retry: {exc}\nRaw: {raw_resp[:300]}")
+                data = {
+                    "per_requirement_results": {"Requirement implementation": False},
+                    "contract_adherence": False,
+                    "notes": f"Reviewer JSON parse failure: {exc}",
+                }
 
         per_req = data.get("per_requirement_results", {})
         # Ensure per_requirement_results has at least the task acceptance criteria
@@ -245,6 +287,9 @@ class GlobalReviewer:
                         },
                     )
                     rework_tasks.append(rework_task)
+
+        self.last_tokens_in = tok_in
+        self.last_tokens_out = tok_out
 
         verdict = ReviewVerdict(
             requirement=requirement,

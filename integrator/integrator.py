@@ -268,6 +268,12 @@ class Integrator:
         self.pre_edit_snapshot = snapshot_directory(self.target_dir, dest)
         return self.pre_edit_snapshot
 
+    def compute_diff(self) -> str:
+        """Compute unified diff between pre-edit snapshot and current target_dir."""
+        if self.pre_edit_snapshot and self.pre_edit_snapshot.exists():
+            return generate_filesystem_diff(self.pre_edit_snapshot, self.target_dir)
+        return ""
+
     def merge(self, completed_tasks: list[TaskContract]) -> list[str]:
         """
         Merge files written by completed workers from their isolated workspaces
