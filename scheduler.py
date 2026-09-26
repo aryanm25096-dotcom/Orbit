@@ -29,9 +29,10 @@ import yaml
 
 from architect.architect import MasterArchitect
 from indexer.indexer import RepoIndex
-from models.spec import MasterSpecification, TaskContract, TaskStatus
+from integrator.integrator import Integrator
+from models.spec import FailureContext, MasterSpecification, TaskContract, TaskStatus
 from telemetry.collector import TelemetryCollector
-from workers.base_worker import run_worker_async
+from workers.base_worker import run_worker, run_worker_async
 
 logger = logging.getLogger("orbit.scheduler")
 
@@ -266,37 +267,39 @@ def run_orbit(
     finally:
         loop.close()
 
-    # 4. Integrate artifacts into target
-    applied_files = integrate_artifacts(spec, target)
-    print(f"[orbit] Integrated {len(applied_files)} files into target: {applied_files}")
+    # 4. Integrate artifacts & verify with recovery loop (Phase 5)
+    max_recovery = cfg.get("guardrails", {}).get("max_recovery_loops", 3)
+    integrator = Integrator(target_dir=target, max_recovery_loops=max_recovery)
 
-    # 5. Run target tests to verify end-to-end correctness
-    test_result_output = ""
-    test_suite_passed = False
-    has_target_tests = any(target.rglob("test_*.py")) or any(target.rglob("*_test.py"))
-    if has_target_tests:
-        print("[orbit] Running test suite against integrated target...")
-        try:
-            res = subprocess.run(
-                ["python3", "-m", "pytest"],
-                cwd=str(target),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            test_suite_passed = (res.returncode == 0)
-            test_result_output = res.stdout + res.stderr
-            print(f"[orbit] Target test suite: {'PASSED' if test_suite_passed else 'FAILED'}")
-        except Exception as exc:
-            test_result_output = str(exc)
-            print(f"[orbit] Target test suite execution error: {exc}")
+    def _worker_runner(contract: TaskContract, ctx: FailureContext) -> TaskContract:
+        return run_worker(
+            contract=contract,
+            model=resolved_model,
+            base_url=resolved_base_url,
+            target_dir=target,
+            ollama_caller=ollama_caller,
+        )
+
+    print("[orbit] Running Integrator (merge + verification + targeted recovery)...")
+    integration_report = integrator.integrate_and_verify(
+        tasks=updated_tasks,
+        worker_runner=_worker_runner,
+    )
+
+    test_suite_passed = integration_report.get("success", False)
+    print(f"[orbit] Integration result: {'SUCCESS' if test_suite_passed else 'FAILED'}")
+    if integration_report.get("tie_breaker_applied"):
+        print(f"[orbit] Tie-breaker applied: best candidate restored (attempt {integration_report.get('best_candidate', {}).get('attempt')})")
 
     return {
         "spec": spec.model_dump(),
         "tasks": [t.model_dump() for t in updated_tasks],
-        "applied_files": applied_files,
+        "applied_files": integration_report.get("applied_files", []),
         "test_suite_passed": test_suite_passed,
-        "test_result_output": test_result_output,
+        "test_result_output": integration_report.get("verification", {}).get("output", ""),
+        "recovery_loops_run": integration_report.get("recovery_loops_run", 0),
+        "tie_breaker_applied": integration_report.get("tie_breaker_applied", False),
+        "diff": integration_report.get("diff", ""),
         "telemetry": telemetry.report(),
     }
 

@@ -189,6 +189,17 @@ class BaseWorker(ABC):
             lines.append("RELEVANT EXISTING FILES CONTENT:")
             lines.extend(input_contents)
 
+        failure_ctx = contract.evidence.get("failure_context")
+        if failure_ctx:
+            lines.append("\nTARGETED REWORK PASS (FIXING TEST FAILURE):")
+            lines.append(f"Failing Command : {failure_ctx.get('command', '')}")
+            lines.append(f"Error Output    :\n{failure_ctx.get('error_output', '')}\n")
+            if failure_ctx.get("stack_trace"):
+                lines.append(f"Stack Trace     :\n{failure_ctx.get('stack_trace', '')}\n")
+            if failure_ctx.get("changed_files"):
+                lines.append(f"Files To Fix    : {failure_ctx.get('changed_files', [])}\n")
+            lines.append("Provide the corrected file content to resolve this failure.\n")
+
         if previous_error:
             lines.append(
                 f"YOUR PREVIOUS RESPONSE FAILED WITH THIS ERROR:\n"
@@ -345,7 +356,8 @@ class BaseWorker(ABC):
         return contract
 
     def recover(self, contract: TaskContract, ctx: FailureContext) -> TaskContract:
-        """Targeted recovery pass. Default: re-run execute."""
+        """Targeted recovery pass. Incorporates FailureContext to fix failure."""
+        contract.evidence["failure_context"] = ctx.model_dump()
         return self.execute(contract)
 
 
