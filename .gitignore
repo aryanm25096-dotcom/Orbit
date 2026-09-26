@@ -16,3 +16,4 @@ orbit_runs/
 .orbit*
 test_targets/.orbit*
 *.json.tmp
+.env
