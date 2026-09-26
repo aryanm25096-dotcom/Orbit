@@ -27,11 +27,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from gateway.gateway import detect_test_command
 from models.spec import FailureContext, TaskContract, TaskStatus
 from workers.base_worker import run_worker
 
@@ -242,12 +244,16 @@ class Integrator:
         self,
         target_dir: Path,
         max_recovery_loops: int = 3,
-        test_command: str = "python3 -m pytest",
+        test_command: str | None = None,
         snapshots_root: Path | None = None,
     ) -> None:
         self.target_dir = Path(target_dir).resolve()
         self.max_recovery_loops = max_recovery_loops
-        self.test_command = test_command
+
+        if test_command is None or test_command in ("python3 -m pytest", "pytest"):
+            self.test_command = detect_test_command(self.target_dir)
+        else:
+            self.test_command = test_command
 
         root = snapshots_root or (self.target_dir.parent / f".orbit_integrator_{int(time.time())}")
         self.snapshots_root = Path(root).resolve()
@@ -286,7 +292,9 @@ class Integrator:
         """Run the repository test suite against target_dir."""
         has_tests = (
             any(self.target_dir.rglob("test_*.py")) or
-            any(self.target_dir.rglob("*_test.py"))
+            any(self.target_dir.rglob("*_test.py")) or
+            (self.target_dir / "package.json").exists() or
+            (self.target_dir / "Cargo.toml").exists()
         )
         if not has_tests:
             return VerificationResult(
@@ -300,9 +308,14 @@ class Integrator:
             )
 
         cmd_list = self.test_command.split() if isinstance(self.test_command, str) else list(self.test_command)
+        if cmd_list and cmd_list[0] == "pytest" and shutil.which("pytest") is None:
+            cmd_exec = [sys.executable, "-m", "pytest"] + cmd_list[1:]
+        else:
+            cmd_exec = cmd_list
+
         try:
             proc = subprocess.run(
-                cmd_list,
+                cmd_exec,
                 cwd=str(self.target_dir),
                 capture_output=True,
                 text=True,

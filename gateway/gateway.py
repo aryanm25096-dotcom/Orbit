@@ -48,8 +48,12 @@ Public interface
 
 from __future__ import annotations
 
+import json
+import re
 import shlex
+import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -147,6 +151,55 @@ class GatewayEvent:
     args: dict[str, Any]        # call arguments (paths sanitised to str)
     success: bool
     error: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Test Runner Auto-Detection (PRD §4.4, §7)
+# ---------------------------------------------------------------------------
+
+def detect_test_command(target_dir: str | Path) -> str:
+    """
+    Detect the appropriate test command from the target directory structure:
+    1. pytest.ini or pyproject.toml -> 'pytest'
+    2. package.json with a 'test' script -> 'npm test'
+    3. Cargo.toml -> 'cargo test'
+    4. Makefile with a 'test' target -> 'make test'
+    5. fallback -> 'pytest'
+    """
+    p = Path(target_dir).resolve()
+
+    # 1. pytest.ini or pyproject.toml -> pytest
+    if (p / "pytest.ini").exists() or (p / "pyproject.toml").exists():
+        return "pytest"
+
+    # 2. package.json with a "test" script -> npm test
+    pkg_json = p / "package.json"
+    if pkg_json.exists():
+        try:
+            with open(pkg_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "test" in data.get("scripts", {}):
+                return "npm test"
+        except Exception:
+            pass
+
+    # 3. Cargo.toml -> cargo test
+    if (p / "Cargo.toml").exists():
+        return "cargo test"
+
+    # 4. Makefile with a "test" target -> make test
+    for mf in ["Makefile", "makefile", "GNUmakefile"]:
+        makefile = p / mf
+        if makefile.exists():
+            try:
+                content = makefile.read_text(encoding="utf-8", errors="replace")
+                if re.search(r"^\s*test\s*:", content, re.MULTILINE):
+                    return "make test"
+            except Exception:
+                pass
+
+    # 5. fallback -> pytest
+    return "pytest"
 
 
 # ---------------------------------------------------------------------------
@@ -404,30 +457,42 @@ class ToolGateway:
 
     def run_tests(
         self,
-        test_command: str | list[str] = "python3 -m pytest",
+        test_command: str | list[str] | None = None,
         cwd: str | Path | None = None,
     ) -> TestResult:
         """
         Run the test suite and return a TestResult.
 
+        - If test_command is None, auto-detects from cwd / workspace_root.
         - Killed (SIGKILL) after TEST_TIMEOUT_SEC → timed_out=True.
         - cwd defaults to workspace_root.
         - Does NOT retry on failure (recovery loop is the Integrator's job).
         - Counts as one tool call regardless of duration.
         """
         tool = "run_tests"
-        if isinstance(test_command, list):
-            cmd_str = " ".join(test_command)
-            cmd_list = test_command
-        else:
-            cmd_str = test_command
-            cmd_list = shlex.split(test_command)
 
         try:
             safe_cwd = self._safe_exec_cwd(cwd)
         except PathEscapeError as exc:
-            self._charge(tool, {"command": cmd_str, "cwd": str(cwd)}, success=False, error=str(exc))
+            cmd_label = test_command if isinstance(test_command, str) else "auto-detect"
+            self._charge(tool, {"command": cmd_label, "cwd": str(cwd)}, success=False, error=str(exc))
             raise
+
+        if test_command is None:
+            test_command = detect_test_command(safe_cwd)
+
+        if isinstance(test_command, list):
+            cmd_str = " ".join(test_command)
+            cmd_list = list(test_command)
+        else:
+            cmd_str = test_command
+            cmd_list = shlex.split(test_command)
+
+        # Bridge: if running pytest and pytest binary not found in PATH, use sys.executable -m pytest
+        if cmd_list and cmd_list[0] == "pytest" and shutil.which("pytest") is None:
+            cmd_exec = [sys.executable, "-m", "pytest"] + cmd_list[1:]
+        else:
+            cmd_exec = cmd_list
 
         args = {"command": cmd_str, "cwd": str(safe_cwd)}
 
@@ -435,7 +500,7 @@ class ToolGateway:
         timed_out = False
         try:
             proc = subprocess.run(
-                cmd_list,
+                cmd_exec,
                 capture_output=True,
                 text=True,
                 cwd=str(safe_cwd),

@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 
 from architect.architect import call_ollama, extract_json
 from config.router import get_role_config
+from gateway.gateway import detect_test_command
 from indexer.indexer import RepoIndex
 from scheduler import run_orbit
 from telemetry.collector import TelemetryCollector
@@ -90,10 +91,17 @@ def run_naive_baseline(
     except Exception as exc:
         print(f"[baseline] Failed to parse/apply response: {exc}")
 
-    # Run tests
+    # Run tests using detected test command
+    test_cmd = detect_test_command(target_dir)
+    cmd_list = test_cmd.split() if isinstance(test_cmd, str) else list(test_cmd)
+    if cmd_list and cmd_list[0] == "pytest" and shutil.which("pytest") is None:
+        cmd_exec = [sys.executable, "-m", "pytest"] + cmd_list[1:]
+    else:
+        cmd_exec = cmd_list
+
     test_passed = False
     test_proc = subprocess.run(
-        ["python3", "-m", "pytest"],
+        cmd_exec,
         cwd=str(target_dir),
         capture_output=True,
         text=True,
@@ -121,14 +129,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Orbit Hero Artifact Benchmark")
     parser.add_argument(
         "--target",
-        default="test_targets/plain_dir",
+        default="test_targets/coord_service",
         help="Target directory to run benchmark on.",
     )
     parser.add_argument(
         "--task",
         default=(
-            "Add a multiply function that takes two numbers and returns their product to src/greeter.py, "
-            "and add a test_multiply unit test to tests/test_greeter.py."
+            "Implement transfer(from_id: str, to_id: str, amount: float, fx_rate: float = 1.0) in PaymentService (src/coord_service/service.py) "
+            "that validates accounts and amount, deducts amount + fee where fee is round(amount * self.fee_percent, 2), "
+            "raises InsufficientFundsError if balance < amount + fee, raises InvalidAmountError if amount <= 0, "
+            "credits round(amount * fx_rate, 2) to to_id, records a TransactionRecord in ledger, and returns the TransactionRecord."
         ),
         help="Task requirement for both baseline and Orbit.",
     )
