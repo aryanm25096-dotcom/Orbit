@@ -20,7 +20,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +360,7 @@ class ReviewVerdict(BaseModel):
         description="Reviewer prose: gaps found, evidence consulted.",
     )
 
+    @computed_field
     @property
     def passed(self) -> bool:
         """True only when every criterion passes AND contract adherence holds."""

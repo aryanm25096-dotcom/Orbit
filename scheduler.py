@@ -318,6 +318,24 @@ def run_orbit(
     table_str = reviewer.format_table(verdict)
     print(f"\n{table_str}\n")
 
+    # Record worker tool calls and tokens into telemetry
+    for t in updated_tasks:
+        gw_summary = t.evidence.get("gateway_summary", {})
+        calls = gw_summary.get("total_calls", 0)
+        for _ in range(calls):
+            telemetry.record_tool_call(phase="worker", tool="tool_gateway", success=True)
+        t_in = t.evidence.get("tokens_in", 0)
+        t_out = t.evidence.get("tokens_out", 0)
+        if t_in or t_out:
+            telemetry.record_llm_call(phase="worker", tokens_in=t_in, tokens_out=t_out, model=resolved_model)
+
+    if integration_report.get("recovery_loops_run", 0) > 0:
+        telemetry.record_recovery_loop(
+            attempt=integration_report.get("recovery_loops_run", 0),
+            task_id="integration",
+            passing_tests=integration_report.get("verification", {}).get("passing_tests", 0),
+        )
+
     return {
         "spec": spec.model_dump(),
         "tasks": [t.model_dump() for t in updated_tasks],

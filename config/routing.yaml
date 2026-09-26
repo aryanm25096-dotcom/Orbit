@@ -1,7 +1,7 @@
 # config/routing.yaml — Orbit Model Routing Configuration
 # =========================================================
 # Stage A (Phase 0–6): uniform routing — every role uses the same local model.
-# Stage B (Phase 7):   per-role overrides are uncommented and tuned.
+# Stage B (Phase 7):   per-role overrides enabled with alternate provider (OpenRouter).
 #
 # Guardrails (enforced by gateway/):
 guardrails:
@@ -11,31 +11,32 @@ guardrails:
   test_timeout_sec: 120       # wall-clock limit for a single test suite run
 
 # Stage A default — one model, all roles.
-# nemotron-3-ultra:cloud: 550B cloud model via Ollama.com relay — ~22s/call.
-# deepseek-coder-v2:latest: 15.7B local MoE — ~0.1 tok/s on this hardware (avoid).
 stage_a:
   default_model: nemotron-3-ultra:cloud
   provider: ollama
   base_url: http://localhost:11434
-  # Offline fallback (slow): deepseek-coder-v2:latest
 
-# Stage B per-role overrides (disabled until Phase 7).
-# Uncomment and adjust after Stage A pipeline is proven end-to-end.
+# Stage B per-role overrides (PRD §4.3, Phase 7).
 stage_b:
-  enabled: false
+  enabled: true
   roles:
     architect:
-      model: deepseek-coder-v2:latest
+      model: nemotron-3-ultra:cloud
       provider: ollama
+      base_url: http://localhost:11434
     database:
-      model: deepseek-coder-v2:latest
+      model: nemotron-3-ultra:cloud
       provider: ollama
+      base_url: http://localhost:11434
     backend:
-      model: deepseek-coder-v2:latest
+      model: nemotron-3-ultra:cloud
       provider: ollama
+      base_url: http://localhost:11434
     frontend:
-      model: deepseek-coder-v2:latest
-      provider: ollama
+      model: mistralai/mistral-7b-instruct:free
+      provider: openrouter
+      base_url: https://openrouter.ai/api/v1
     reviewer:
-      model: deepseek-coder-v2:latest
+      model: nemotron-3-ultra:cloud
       provider: ollama
+      base_url: http://localhost:11434
