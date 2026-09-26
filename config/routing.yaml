@@ -11,10 +11,13 @@ guardrails:
   test_timeout_sec: 120       # wall-clock limit for a single test suite run
 
 # Stage A default — one model, all roles.
+# nemotron-3-ultra:cloud: 550B cloud model via Ollama.com relay — ~22s/call.
+# deepseek-coder-v2:latest: 15.7B local MoE — ~0.1 tok/s on this hardware (avoid).
 stage_a:
-  default_model: deepseek-coder-v2:latest
+  default_model: nemotron-3-ultra:cloud
   provider: ollama
   base_url: http://localhost:11434
+  # Offline fallback (slow): deepseek-coder-v2:latest
 
 # Stage B per-role overrides (disabled until Phase 7).
 # Uncomment and adjust after Stage A pipeline is proven end-to-end.

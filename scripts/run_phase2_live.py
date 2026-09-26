@@ -40,7 +40,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--model",
-        default="deepseek-coder-v2:latest",
+        default="nemotron-3-ultra:cloud",
     )
     args = parser.parse_args()
 

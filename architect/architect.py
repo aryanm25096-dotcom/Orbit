@@ -164,8 +164,101 @@ def _extract_json(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Ollama HTTP client (thin, no SDK dependency)
+# Ollama HTTP client — supports both /api/generate and /api/chat
 # ---------------------------------------------------------------------------
+
+# Models that must use /api/chat instead of /api/generate.
+# Add any future cloud/hosted models here.
+CHAT_MODELS: frozenset[str] = frozenset({
+    "nemotron-3-ultra:cloud",
+})
+
+def _call_generate(
+    prompt: str,
+    system: str,
+    model: str,
+    base_url: str,
+    temperature: float,
+    num_predict: int,
+    ollama_timeout: int,
+) -> tuple[str, int, int]:
+    """
+    /api/generate with stream=True.
+    Used for local models — streaming keeps the socket alive so per-chunk
+    read timeouts never hit even on slow hardware (0.1 tok/s verified).
+    """
+    payload = {
+        "model": model,
+        "system": system,
+        "prompt": prompt,
+        "stream": True,
+        "format": "json",
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/generate",
+        json=payload,
+        stream=True,
+        timeout=(10, ollama_timeout),
+    )
+    resp.raise_for_status()
+
+    chunks: list[str] = []
+    tokens_in = tokens_out = 0
+    for raw_line in resp.iter_lines():
+        if not raw_line:
+            continue
+        try:
+            chunk = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        chunks.append(chunk.get("response", ""))
+        if chunk.get("done", False):
+            tokens_in  = chunk.get("prompt_eval_count", 0)
+            tokens_out = chunk.get("eval_count", 0)
+            break
+    return "".join(chunks), tokens_in, tokens_out
+
+
+def _call_chat(
+    prompt: str,
+    system: str,
+    model: str,
+    base_url: str,
+    temperature: float,
+    num_predict: int,
+    ollama_timeout: int,
+) -> tuple[str, int, int]:
+    """
+    /api/chat with stream=False.
+    Used for cloud/hosted models (e.g. nemotron-3-ultra:cloud) which
+    require the messages-list format and respond fast enough that a
+    single blocking read is fine.
+    """
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": prompt},
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/chat",
+        json=payload,
+        timeout=(10, ollama_timeout),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    content = data.get("message", {}).get("content", "")
+    return (
+        content,
+        data.get("prompt_eval_count", 0),
+        data.get("eval_count", 0),
+    )
+
 
 def _call_ollama(
     prompt: str,
@@ -174,35 +267,22 @@ def _call_ollama(
     base_url: str,
     temperature: float = 0.0,
     num_predict: int = 2048,
+    ollama_timeout: int = 600,
 ) -> tuple[str, int, int]:
     """
-    POST to /api/generate with format=json.
-    Returns (response_text, tokens_in, tokens_out).
+    Dispatcher: routes to _call_chat (cloud/hosted models) or
+    _call_generate (local, streaming) based on CHAT_MODELS membership.
+    Both return (response_text, tokens_in, tokens_out).
     Raises requests.RequestException on network / HTTP failure.
     """
-    payload = {
-        "model": model,
-        "system": system,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": temperature,
-            "num_predict": num_predict,
-        },
-    }
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/api/generate",
-        json=payload,
-        timeout=300,
+    kwargs = dict(
+        prompt=prompt, system=system, model=model, base_url=base_url,
+        temperature=temperature, num_predict=num_predict,
+        ollama_timeout=ollama_timeout,
     )
-    resp.raise_for_status()
-    data = resp.json()
-    return (
-        data.get("response", ""),
-        data.get("prompt_eval_count", 0),
-        data.get("eval_count", 0),
-    )
+    if model in CHAT_MODELS:
+        return _call_chat(**kwargs)
+    return _call_generate(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -229,12 +309,14 @@ class MasterArchitect:
         telemetry=None,           # TelemetryCollector | None
         temperature: float = 0.0,
         num_predict: int = 2048,
+        ollama_timeout: int = 600,  # seconds; streaming keeps socket alive
     ) -> None:
         self.model = model
         self.base_url = base_url
         self.telemetry = telemetry
         self.temperature = temperature
         self.num_predict = num_predict
+        self.ollama_timeout = ollama_timeout
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -292,6 +374,7 @@ class MasterArchitect:
                     base_url=self.base_url,
                     temperature=self.temperature,
                     num_predict=self.num_predict,
+                    ollama_timeout=self.ollama_timeout,
                 )
             except requests.RequestException as exc:
                 raise ArchitectError(
