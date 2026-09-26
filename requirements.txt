@@ -1,7 +1,10 @@
-# Orbit — Python dependencies
+# Orbit — Autonomous Multi-Agent Software Engineering Harness
 # Install with: pip install -r requirements.txt
 
-# HTTP client for Ollama API calls
+# Data modeling and schema validation
+pydantic>=2.5.0
+
+# HTTP client for Ollama and model provider API calls
 requests>=2.31.0
 
 # YAML config parsing
