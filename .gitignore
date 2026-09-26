@@ -1,0 +1,16 @@
+# Orbit — Autonomous Multi-Agent Software Engineering Harness
+# PRD v1.1 — LCC × DevClub AI Coding Harness Hackathon
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+*.log
+.DS_Store
+orbit_runs/
+*.json.tmp

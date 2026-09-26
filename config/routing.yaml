@@ -1,0 +1,38 @@
+# config/routing.yaml — Orbit Model Routing Configuration
+# =========================================================
+# Stage A (Phase 0–6): uniform routing — every role uses the same local model.
+# Stage B (Phase 7):   per-role overrides are uncommented and tuned.
+#
+# Guardrails (enforced by gateway/):
+guardrails:
+  max_tool_calls: 30          # per worker per task
+  max_retries: 3              # per tool call
+  max_recovery_loops: 3       # global across the integrator recovery pass
+  test_timeout_sec: 120       # wall-clock limit for a single test suite run
+
+# Stage A default — one model, all roles.
+stage_a:
+  default_model: deepseek-coder-v2:latest
+  provider: ollama
+  base_url: http://localhost:11434
+
+# Stage B per-role overrides (disabled until Phase 7).
+# Uncomment and adjust after Stage A pipeline is proven end-to-end.
+stage_b:
+  enabled: false
+  roles:
+    architect:
+      model: deepseek-coder-v2:latest
+      provider: ollama
+    database:
+      model: deepseek-coder-v2:latest
+      provider: ollama
+    backend:
+      model: deepseek-coder-v2:latest
+      provider: ollama
+    frontend:
+      model: deepseek-coder-v2:latest
+      provider: ollama
+    reviewer:
+      model: deepseek-coder-v2:latest
+      provider: ollama
