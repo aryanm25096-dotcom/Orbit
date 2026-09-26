@@ -30,7 +30,8 @@ import yaml
 from architect.architect import MasterArchitect
 from indexer.indexer import RepoIndex
 from integrator.integrator import Integrator
-from models.spec import FailureContext, MasterSpecification, TaskContract, TaskStatus
+from models.spec import FailureContext, MasterSpecification, ReviewVerdict, TaskContract, TaskStatus
+from reviewer.reviewer import GlobalReviewer
 from telemetry.collector import TelemetryCollector
 from workers.base_worker import run_worker, run_worker_async
 
@@ -291,6 +292,32 @@ def run_orbit(
     if integration_report.get("tie_breaker_applied"):
         print(f"[orbit] Tie-breaker applied: best candidate restored (attempt {integration_report.get('best_candidate', {}).get('attempt')})")
 
+    # 5. Global Reviewer pass (Phase 6)
+    print("\n[orbit] Running Global Reviewer (requirements & contract adherence)...")
+    reviewer = GlobalReviewer(
+        model=resolved_model,
+        base_url=resolved_base_url,
+        ollama_caller=ollama_caller,
+    )
+    review_evidence = {
+        "diff": integration_report.get("diff", ""),
+        "test_output": integration_report.get("verification", {}).get("output", ""),
+        "tasks": {
+            t.task_id: {
+                "summary": t.result_summary,
+                "files_written": t.evidence.get("files_written", []),
+            }
+            for t in updated_tasks
+        },
+    }
+    verdict = reviewer.review(
+        requirement=task,
+        spec=spec,
+        evidence=review_evidence,
+    )
+    table_str = reviewer.format_table(verdict)
+    print(f"\n{table_str}\n")
+
     return {
         "spec": spec.model_dump(),
         "tasks": [t.model_dump() for t in updated_tasks],
@@ -300,6 +327,8 @@ def run_orbit(
         "recovery_loops_run": integration_report.get("recovery_loops_run", 0),
         "tie_breaker_applied": integration_report.get("tie_breaker_applied", False),
         "diff": integration_report.get("diff", ""),
+        "verdict": verdict.model_dump(),
+        "review_table": table_str,
         "telemetry": telemetry.report(),
     }
 
