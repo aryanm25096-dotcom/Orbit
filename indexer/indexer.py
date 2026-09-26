@@ -146,6 +146,10 @@ class CodeSearchResult:
     line_number: int
     line_content: str
 
+    @property
+    def content(self) -> str:
+        return self.line_content
+
 
 # ---------------------------------------------------------------------------
 # RepoIndex
